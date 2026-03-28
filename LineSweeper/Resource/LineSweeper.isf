@@ -1,0 +1,142 @@
+/*{
+  "DESCRIPTION": "Random white bars with varying widths drift left-to-right, with per-bar sine oscillation (unique phase/frequency) and optional global rotation.",
+  "CATEGORIES": [ "Generator" ],
+  "INPUTS": [
+    { "NAME": "DENSITY", "TYPE": "float", "DEFAULT": 0.25, "MIN": 0.0, "MAX": 1.0 },
+    { "NAME": "SPEED",   "TYPE": "float", "DEFAULT": 0.25, "MIN": 0.0, "MAX": 0.5 },
+
+    { "NAME": "MIN_WIDTH_PX", "TYPE": "float", "DEFAULT": 1.0,  "MIN": 1.0, "MAX": 300.0 },
+    { "NAME": "MAX_WIDTH_PX", "TYPE": "float", "DEFAULT": 100.0, "MIN": 1.0, "MAX": 300.0 },
+
+    { "NAME": "SITES",   "TYPE": "long", "DEFAULT": 20, "MIN": 1, "MAX": 192 },
+	{ "NAME": "PERIOD_SITES", "TYPE": "float", "DEFAULT": 1048576.0, "MIN": 1024.0, "MAX": 16777216.0, "LABEL": "Wrap period (in sites)" },
+
+    { "NAME": "WOBBLE_AMP_PX",    "TYPE": "float", "DEFAULT": 100.0, "MIN": 0.0, "MAX": 300.0, "LABEL": "Wobble amp (px)" },
+    { "NAME": "WOBBLE_SPEED", "TYPE": "float", "DEFAULT": 1.0,  "MIN": 0.0, "MAX": 10.0,  "LABEL": "Wobble speed" },
+    { "NAME": "WOBBLE_MINF",  "TYPE": "float", "DEFAULT": 0.1,  "MIN": 0.0, "MAX": 20.0,  "LABEL": "Wobble min freq" },
+    { "NAME": "WOBBLE_MAXF",  "TYPE": "float", "DEFAULT": 1.5,  "MIN": 0.0, "MAX": 20.0,  "LABEL": "Wobble max freq" },
+
+    { "NAME": "rotation", "TYPE": "float", "DEFAULT": 0.0, "MIN": 0.0, "MAX": 6.283185, "LABEL": "Rotation (radians)" },
+
+    { "NAME": "SEED",    "TYPE": "float", "DEFAULT": 0.0, "MIN": 0.0, "MAX": 1000.0 }
+  ]
+}*/
+
+/*
+ISF Reference
+=-=-=-=-=-=-=
+
+1) Valid inputs:
+    - "event"
+    - "bool"
+    - "long"
+    - "float"
+    - "point2D"
+    - "color"
+    - "image"
+    - "audio"
+    - "audioFFT"
+
+2) Functions:
+    - IMG_NORM_PIXEL() -> get a pixel from input with normalized coordinates
+    - IMG_PIXEL() -> get a pixel from input with screen space coordinates
+
+3) Predefined variables:
+    - RENDERSIZE (resolution of the shader)
+    - TIME (run time)
+    - gl_FragCoord.xy (screen space coordinates of current fragment)
+    - isf_FragNormCoord.xy (normalized coordinates)
+
+To learn more see:
+https://github.com/mrRay/ISF_Spec/
+*/
+
+float hash11(float p) {
+  p = fract(p * 0.1031);
+  p *= p + 33.33;
+  p *= p + p;
+  return fract(p);
+}
+
+vec2 rotate2D(vec2 p, float a) {
+    float s = sin(a);
+    float c = cos(a);
+    return vec2(
+        c * p.x - s * p.y,
+        s * p.x + c * p.y
+    );
+}
+
+float barAtSite(float sites, float k, float xAdv) {	 
+    // Stable per-site randoms
+    float rDensity = hash11(k + SEED * 17.0); // density on/off
+	float rWidth = hash11(k + 47.0 + SEED * 29.0); // width pick
+	float rPhase = hash11(k + 91.0  + SEED * 31.0);  // phase 0..1
+    float rFreq  = hash11(k + 137.0 + SEED * 41.0);  // freq  0..1
+	
+	float on = step(1.0 - DENSITY, rDensity);
+
+    // Center of this site in UV:
+    float center = (k + 0.5) / sites;
+	
+	// Per-bar sine wobble (UV)
+  float phase = rPhase * 6.28318530718; // 2*pi
+  float freq  = mix(WOBBLE_MINF, WOBBLE_MAXF, rFreq) * WOBBLE_SPEED;
+
+  float wobbleUV = (WOBBLE_AMP_PX / RENDERSIZE.x) * sin(TIME * freq + phase);
+
+  center += wobbleUV;
+
+    // Full site width in UV:
+    //float wUV = 1.0 / sites;
+	float wUV = mix(MIN_WIDTH_PX, MAX_WIDTH_PX, rWidth) / RENDERSIZE.x;
+
+    // Distance from pixel to site center:
+    float d = abs(xAdv - center);
+
+    // Anti-alias width (UV). Keep it small.
+    float aa = (1.0 / RENDERSIZE.x) * 1.5;
+
+    // Mask: 1 inside half-width, fades to 0 outside.
+    float m = 1.0 - smoothstep(0.5 * wUV, 0.5 * wUV + aa, d);
+
+    return on * m;
+}
+
+void main() {
+    vec2 uv = isf_FragNormCoord.xy;
+	
+    // Center → rotate → uncenter
+    vec2 uvRot = uv - 0.5;
+    uvRot = rotate2D(uvRot, rotation);
+    uvRot += 0.5;
+
+	float numSites = max(1, SITES);
+
+	// Large-period wrap in "site space" (prevents obvious 0..1 tiling
+    // while keeping gx bounded for long runs).
+    float periodSites = max(1.0, PERIOD_SITES);
+
+    float gx = (uvRot.x - TIME * SPEED) * numSites;
+    gx = gx - floor(gx / periodSites) * periodSites; // wrap gx into [0, periodSites)
+
+    float k = floor(gx);
+
+    // Convert back to "world UV-ish" coordinate for any distance math you add later
+    float xAdv = gx / numSites;
+	
+	float color = 0.0;
+	color = max(color, barAtSite(numSites, k - 5.0, xAdv));
+	color = max(color, barAtSite(numSites, k - 4.0, xAdv));
+	color = max(color, barAtSite(numSites, k - 3.0, xAdv));
+    color = max(color, barAtSite(numSites, k - 2.0, xAdv));
+    color = max(color, barAtSite(numSites, k - 1.0, xAdv));
+    color = max(color, barAtSite(numSites, k + 0.0, xAdv));
+    color = max(color, barAtSite(numSites, k + 1.0, xAdv));
+    color = max(color, barAtSite(numSites, k + 2.0, xAdv));
+    color = max(color, barAtSite(numSites, k + 3.0, xAdv));
+	color = max(color, barAtSite(numSites, k + 4.0, xAdv));
+	color = max(color, barAtSite(numSites, k + 5.0, xAdv));
+	
+	gl_FragColor = vec4(vec3(color), 1.0);
+}
