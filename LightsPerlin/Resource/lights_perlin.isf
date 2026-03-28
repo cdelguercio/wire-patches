@@ -1,0 +1,74 @@
+/*{
+  "DESCRIPTION": "Splits the input texture into an X by Y grid of white rectangles whose intensities animate over time with Perlin noise. Each cell has a random phase.",
+  "CATEGORIES": [ "Utility", "Generator", "Color" ],
+  "INPUTS": [
+    { "NAME": "inputImage", "TYPE": "image" },
+    { "NAME": "X", "TYPE": "long", "DEFAULT": 4, "MIN": 1, "MAX": 512 },
+    { "NAME": "Y", "TYPE": "long", "DEFAULT": 4, "MIN": 1, "MAX": 512 },
+	{ "NAME": "SPEED", "TYPE": "float" },
+	{ "NAME": "CUTOFF", "TYPE": "float", "DEFAULT": 0.0, "MIN": 0.0, "MAX": 1.0 },
+    { "NAME": "Seed", "TYPE": "float", "DEFAULT": 0.0, "MIN": 0.0, "MAX": 1000.0 }
+  ]
+}*/
+
+float hash12(vec2 p) {
+  // Simple, fast 2D -> 1D hash
+  p = fract(p * vec2(0.1031, 0.11369));
+  p += dot(p, p.yx + 33.33);
+  return fract((p.x + p.y) * p.x * p.y);
+}
+
+// Float -> [0,1) hash
+float hash11(float p) {
+  return fract(sin(p * 127.1 + 311.7) * 43758.5453123);
+}
+
+// Smoothstep-like fade used by Perlin
+float fade(float t) {
+  return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+// 1D Perlin noise (gradient noise)
+float perlin1D(float x) {
+  float i0 = floor(x);
+  float i1 = i0 + 1.0;
+
+  float x0 = x - i0;      // distance to left lattice point
+  float x1 = x0 - 1.0;    // distance to right lattice point
+
+  // Gradients are +/-1 chosen by hashed lattice index
+  float g0 = (hash11(i0) < 0.5) ? -1.0 : 1.0;
+  float g1 = (hash11(i1) < 0.5) ? -1.0 : 1.0;
+
+  float n0 = g0 * x0;
+  float n1 = g1 * x1;
+
+  float u = fade(x0);
+  return mix(n0, n1, u);  // roughly in [-1,1]
+}
+
+void main() {
+  float speed = 0.05 * exp2(float(SPEED)); // change this for faster/slower pulsing
+	
+  vec2 uv = isf_FragNormCoord.xy;
+
+  // Ensure at least 1 cell in each direction
+  float xf = max(float(X), 1.0);
+  float yf = max(float(Y), 1.0);
+
+  // Integer cell indices; clamp at edges
+  int cx = min(int(xf) - 1, int(floor(uv.x * xf)));
+  int cy = min(int(yf) - 1, int(floor(uv.y * yf)));
+
+  // Random per-cell phase from Seed
+  vec2 cell = vec2(float(cx), float(cy));
+  float phase = hash12(cell + vec2(Seed * 13.37, 7.77)) * 100.0; // seconds offset
+
+  // Time-evolving Perlin noise with per-cell phase
+  float n = perlin1D(SPEED + phase);
+
+  float intensity = n >= pow(CUTOFF, 4) ? n : 0.0;
+
+  // White rectangle modulated by intensity
+  gl_FragColor = vec4(vec3(intensity), 1.0);
+}
